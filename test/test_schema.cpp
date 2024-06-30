@@ -24,6 +24,7 @@ using namespace lgraph_api;
 
 class TestSchema : public TuGraphTest {};
 
+// 构造一个简单的 Schema
 static Schema ConstructSimpleSchema() {
     Schema s;
     s.SetSchema(true,
@@ -134,6 +135,7 @@ TEST_F(TestSchema, GetFieldId) {
 TEST_F(TestSchema, DumpRecord) {
     Value v_old("name");
     Value v_new("name1");
+    // record 中不含有 label
     Schema schema(false);
     Schema schema_1(true);
     Schema schema_lg = schema;

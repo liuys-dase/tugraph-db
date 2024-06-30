@@ -758,30 +758,56 @@ bool LightningGraph::AlterLabelModEdgeConstraints(const std::string& label,
     return true;
 }
 
+// 删除 label 中的字段
+/*
+	1.	记录日志：
+	•	输出日志信息，指出要删除的字段、标签类型（顶点或边）和标签名称。
+	2.	获取读锁：
+	•	获取元数据的读锁，以确保在读取和修改过程中元数据的一致性。
+	3.	去重字段列表：
+	•	对要删除的字段列表进行排序和去重，以确保每个字段只被处理一次。
+	•	如果字段列表为空，则抛出输入错误异常。
+	4.	准备辅助数据结构：
+	•	初始化新的字段 ID 列表、新旧字段位置映射和 BLOB 类型字段列表，为后续操作做准备。
+	5.	创建新 schema：
+	•	调用 setup_and_gen_new_schema Lambda 函数，基于当前 schema 创建一个新的 schema。
+	•	在新 schema 中删除指定的字段，并记录新的字段 ID 和旧字段的位置。
+	•	如果删除的字段中有 BLOB 类型字段，则将其添加到 BLOB 删除列表中。
+	6.	修改顶点和边的属性：
+	•	调用 make_new_prop_and_destroy_old Lambda 函数，基于新 schema 重新创建顶点和边的属性。
+	•	复制旧属性数据到新属性，并删除大 BLOB 数据（如果有）。
+	7.	删除索引：
+	•	调用 delete_indexes Lambda 函数，删除与被删除字段相关的索引。
+	•	包括顶点索引、边索引和全文索引，以及复合索引。
+	8.	调用 _AlterLabel 方法：
+	•	最后，调用 _AlterLabel 方法，传入相关参数执行字段删除操作，并返回操作结果。
+ */
 bool LightningGraph::AlterLabelDelFields(const std::string& label,
                                          const std::vector<std::string>& del_fields_,
                                          bool is_vertex, size_t* n_modified) {
+    // 记录日志，输出正在删除的字段、标签类型（顶点或边）和标签名称
     LOG_INFO() << FMA_FMT("Deleting fields {} from {} label [{}].", del_fields_,
                                         is_vertex ? "vertex" : "edge", label);
+    // 获取读锁
     _HoldReadLock(meta_lock_);
-    // make unique
+    // 去重 del_fields_ 字段列表中可能重复的字段
     std::vector<std::string> del_fields(del_fields_);
     std::sort(del_fields.begin(), del_fields.end());
     del_fields.erase(std::unique(del_fields.begin(), del_fields.end()), del_fields.end());
-    if (del_fields.empty()) THROW_CODE(InputError, "No fields specified.");
+    if (del_fields.empty()) THROW_CODE(InputError, "No fields specified.");  // 如果没有指定字段则抛出异常
 
-    // get fids of the fields in new schema
+    // 获取新 schema 中字段的字段 ID
     std::vector<size_t> new_fids;
     std::vector<size_t> old_field_pos;
     std::vector<const _detail::FieldExtractor*> blob_deleted_fes;
 
-    // make new schema
+    // 创建新 schema
     auto setup_and_gen_new_schema = [&](Schema* curr_schema) -> Schema {
         Schema new_schema(*curr_schema);
         new_schema.DelFields(del_fields);
         size_t n_new_fields = new_schema.GetNumFields();
         for (size_t i = 0; i < n_new_fields; i++) new_fids.push_back(i);
-        // setup auxiliary data
+        // 设置辅助数据
         for (size_t i = 0; i < n_new_fields; i++)
             old_field_pos.push_back(
                 curr_schema->GetFieldId(new_schema.GetFieldExtractor(i)->Name()));
@@ -794,15 +820,15 @@ bool LightningGraph::AlterLabelDelFields(const std::string& label,
         return new_schema;
     };
 
-    // modify vertexes and edges
+    // 修改顶点和边的属性
     auto make_new_prop_and_destroy_old = [&](const Value& old_prop, Schema* curr_schema,
                                              Schema* new_schema, Transaction& txn) {
-        // recreate property
+        // 重新创建属性
         Value new_prop = new_schema->CreateEmptyRecord(old_prop.Size());
         new_schema->CopyFieldsRaw(new_prop, new_fids, curr_schema, old_prop, old_field_pos);
         if (blob_deleted_fes.empty()) return new_prop;
-        // delete large blobs if necessary
-        Value old_prop_copy;  // copy the old property in case write ops invalidates pointer
+        // 如果有大 BLOB 数据需要删除
+        Value old_prop_copy;  // 复制旧属性，以防写操作使指针无效
         if (!blob_deleted_fes.empty()) old_prop_copy.Copy(old_prop.Data(), old_prop.Size());
         for (auto& fe : blob_deleted_fes) {
             const Value& v = fe->GetConstRef(old_prop_copy);
@@ -814,21 +840,22 @@ bool LightningGraph::AlterLabelDelFields(const std::string& label,
         return new_prop;
     };
 
+    // 删除索引
     auto delete_indexes = [&](Schema* curr_schema, Schema* new_schema,
                               CleanupActions& rollback_actions, Transaction& txn) {
-        // delete the indexes
+        // 删除索引
         auto fids = curr_schema->GetFieldIds(del_fields);
-        // delete indexes if necessary
+        // 如果需要，删除索引
         for (auto& f : fids) {
             auto* extractor = curr_schema->GetFieldExtractor(f);
             if (extractor->GetVertexIndex()) {
-                // delete vertex index
+                // 删除顶点索引
                 index_manager_->DeleteVertexIndex(txn.GetTxn(), label, extractor->Name());
             } else if (extractor->GetEdgeIndex()) {
-                // delete edge index
+                // 删除边索引
                 index_manager_->DeleteEdgeIndex(txn.GetTxn(), label, extractor->Name());
             } else if (extractor->FullTextIndexed()) {
-                // delete fulltext index
+                // 删除全文索引
                 index_manager_->DeleteFullTextIndex(txn.GetTxn(), is_vertex, label,
                                                     extractor->Name());
             }
@@ -839,6 +866,7 @@ bool LightningGraph::AlterLabelDelFields(const std::string& label,
         }
     };
 
+    // 调用 _AlterLabel 方法，执行字段删除操作
     return _AlterLabel(is_vertex, label, setup_and_gen_new_schema, make_new_prop_and_destroy_old,
                        delete_indexes, n_modified, 100000);
 }

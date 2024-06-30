@@ -424,27 +424,32 @@ void Schema::CopyFieldsRaw(Value& dst, const std::vector<size_t> fids_in_dst,
 }
 
 void Schema::RefreshLayout() {
-    // check field types
-    // check if there is any blob
+    // 检查字段类型并清空 blob 字段列表
     blob_fields_.clear();
     for (size_t i = 0; i < fields_.size(); i++) {
         auto& f = fields_[i];
+        // 如果字段类型为 NUL，抛出异常
         if (f.Type() == FieldType::NUL) throw FieldCannotBeNullTypeException(f.Name());
+        // 如果字段类型为 BLOB，将字段索引添加到 blob 字段列表中
         if (f.Type() == FieldType::BLOB) blob_fields_.push_back(i);
     }
-    // if label is included in record, data starts after LabelId
+    
+    // 如果记录中包含标签，数据从 LabelId 之后开始
     size_t data_start_off = label_in_record_ ? sizeof(LabelId) : 0;
-    // setup name_to_fields
+
+    // 设置名称到字段索引的映射
     name_to_idx_.clear();
     for (size_t i = 0; i < fields_.size(); i++) {
         auto& f = fields_[i];
         f.SetFieldId(i);
         f.SetNullableArrayOff(data_start_off);
+        // 如果字段名称已经存在，抛出异常
         if (_F_UNLIKELY(name_to_idx_.find(f.Name()) != name_to_idx_.end()))
             throw FieldAlreadyExistsException(f.Name());
         name_to_idx_[f.Name()] = i;
     }
-    // layout nullable array
+
+    // 布局 可为空数组
     n_nullable_ = 0;
     for (auto& f : fields_) {
         if (f.IsOptional()) {
@@ -453,7 +458,8 @@ void Schema::RefreshLayout() {
         }
     }
     v_offset_start_ = data_start_off + (n_nullable_ + 7) / 8;
-    // layout the fixed fields
+
+    // 布局 固定字段
     n_fixed_ = 0;
     n_variable_ = 0;
     for (auto& f : fields_) {
@@ -465,13 +471,15 @@ void Schema::RefreshLayout() {
             n_variable_++;
         }
     }
-    // now, layout the variable fields
+
+    // 布局 可变字段
     size_t vidx = 0;
     for (auto& f : fields_) {
         if (!field_data_helper::IsFixedLengthFieldType(f.Type()))
             f.SetVLayoutInfo(v_offset_start_, n_variable_, vidx++);
     }
-    // finally, check the indexed fields
+
+    // 最后，检查索引字段
     indexed_fields_.clear();
     bool found_primary = false;
     for (auto& f : fields_) {
@@ -482,11 +490,13 @@ void Schema::RefreshLayout() {
             found_primary = true;
         }
     }
-    // vertex must have primary property
+
+    // 顶点必须有主属性
     if (is_vertex_ && !indexed_fields_.empty()) {
         FMA_ASSERT(found_primary);
     }
 
+    // 设置全文索引字段
     fulltext_fields_.clear();
     for (auto& f : fields_) {
         if (!f.FullTextIndexed()) continue;
@@ -604,6 +614,7 @@ void Schema::DeleteDetachedEdgeProperty(KvTransaction& txn, const EdgeUid& eid) 
 }
 
 // clear fields, other contents are kept untouched
+// 清空字段，其他内容保持不变
 void Schema::ClearFields() {
     label_.clear();
     fields_.clear();
@@ -633,34 +644,50 @@ void Schema::SetSchema(bool is_vertex, size_t n_fields, const FieldSpec* fields,
                        const std::string& primary, const std::string& temporal,
                        const TemporalFieldOrder& temporal_order,
                        const EdgeConstraints& edge_constraints) {
+    // 检查字段数量是否有效
     lgraph::CheckValidFieldNum(n_fields);
+    // 清空当前字段列表
     fields_.clear();
+    // 清空字段名称到索引的映射
     name_to_idx_.clear();
-    // assign id to fields, starting from fixed length types
-    // then variable length types
+    
+    // 为字段分配ID，从固定长度类型开始，然后是可变长度类型
     fields_.reserve(n_fields);
     for (size_t i = 0; i < n_fields; i++) {
         const FieldSpec& fs = fields[i];
+        // 如果是固定长度字段类型，则添加到字段列表
         if (field_data_helper::IsFixedLengthFieldType(fs.type)) fields_.emplace_back(fs);
     }
     for (size_t i = 0; i < n_fields; i++) {
         const FieldSpec& fs = fields[i];
+        // 如果不是固定长度字段类型，则添加到字段列表
         if (!field_data_helper::IsFixedLengthFieldType(fs.type))
             fields_.push_back(_detail::FieldExtractor(fs));
     }
+    
+    // 设置是否为顶点
     is_vertex_ = is_vertex;
+    // 设置主键字段
     primary_field_ = primary;
+    // 设置时间字段
     temporal_field_ = temporal;
+    // 设置时间字段顺序
     temporal_order_ = temporal_order;
+    // 设置边约束
     edge_constraints_ = edge_constraints;
+    
+    // 刷新布局
     RefreshLayout();
 }
 
 // del fields, assuming fields is already de-duplicated
 void Schema::DelFields(const std::vector<std::string>& del_fields) {
+    // 如果删除字段列表为空，则直接返回
     if (_F_UNLIKELY(del_fields.empty())) return;
+
+    // 如果是顶点
     if (is_vertex_) {
-        // vertex must has primary field, and can not be deleted
+        // 顶点必须有主键字段，且主键字段不能被删除
         FMA_ASSERT(!primary_field_.empty());
         auto ret = std::find_if(del_fields.begin(), del_fields.end(),
                                 [this](auto& fd) { return this->primary_field_ == fd; });
@@ -668,7 +695,7 @@ void Schema::DelFields(const std::vector<std::string>& del_fields) {
             throw FieldCannotBeDeletedException(primary_field_);
         }
     } else {
-        // if edge has temporal field, can not be deleted
+        // 如果是边，且有时间字段，时间字段不能被删除
         if (!temporal_field_.empty()) {
             auto ret = std::find_if(del_fields.begin(), del_fields.end(),
                                     [this](auto& fd) { return this->temporal_field_ == fd; });
@@ -677,16 +704,24 @@ void Schema::DelFields(const std::vector<std::string>& del_fields) {
             }
         }
     }
+
+    // 获取要删除字段的字段 ID
     std::vector<size_t> del_ids = GetFieldIds(del_fields);
     std::sort(del_ids.begin(), del_ids.end());
+
+    // 删除顶点索引和边索引
     for (auto& id : del_ids) {
         UnVertexIndex(id);
         UnEdgeIndex(id);
     }
+
+    // 删除关系复合索引
     auto composite_index_key = GetRelationalCompositeIndexKey(del_ids);
     for (const auto &k : composite_index_key) {
         UnVertexCompositeIndex(k);
     }
+
+    // 更新字段列表
     del_ids.push_back(fields_.size());
     size_t put_pos = del_ids.front();
     for (size_t i = 0; i < del_ids.size() - 1; i++) {
@@ -695,24 +730,34 @@ void Schema::DelFields(const std::vector<std::string>& del_fields) {
         }
     }
     fields_.erase(fields_.begin() + put_pos, fields_.end());
+
+    // 刷新布局
     RefreshLayout();
 }
 
-// add fields, assuming fields are already de-duplicated
+// 添加字段，假设字段已去重
 void Schema::AddFields(const std::vector<FieldSpec>& add_fields) {
     using namespace import_v2;
+    // 遍历要添加的字段
     for (const auto& f : add_fields) {
+        // 检查字段名是否为保留关键字 "SKIP"、"SRC_ID" 或 "DST_ID"
         if (f.name == KeyWordFunc::GetStrFromKeyWord(KeyWord::SKIP) ||
             f.name == KeyWordFunc::GetStrFromKeyWord(KeyWord::SRC_ID) ||
             f.name == KeyWordFunc::GetStrFromKeyWord(KeyWord::DST_ID)) {
+            // 如果字段名是保留关键字，则抛出输入错误异常
             THROW_CODE(InputError,
                 "Label[{}]: Property name cannot be \"SKIP\" or \"SRC_ID\" or \"DST_ID\"", label_);
         }
+        // 检查字段名是否已存在
         if (_F_UNLIKELY(name_to_idx_.find(f.name) != name_to_idx_.end()))
+            // 如果字段名已存在，则抛出字段已存在异常
             throw FieldAlreadyExistsException(f.name);
+        // 将字段添加到字段列表中
         fields_.push_back(_detail::FieldExtractor(f));
     }
+    // 检查字段数量是否合法
     lgraph::CheckValidFieldNum(fields_.size());
+    // 刷新布局
     RefreshLayout();
 }
 
@@ -754,6 +799,11 @@ std::vector<FieldSpec> Schema::GetFieldSpecs() const {
     return schema;
 }
 
+/**
+ * 将字段规范以映射的形式返回
+ *
+ * \return  字段规范的映射
+ */
 std::map<std::string, FieldSpec> Schema::GetFieldSpecsAsMap() const {
     std::map<std::string, FieldSpec> ret;
     for (auto& kv : name_to_idx_) {

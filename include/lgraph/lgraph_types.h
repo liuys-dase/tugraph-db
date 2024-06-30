@@ -95,6 +95,7 @@ typedef std::vector<std::pair<std::string, std::string>> EdgeConstraints;
 struct LabelOptions {
     // store property data in detached model
     // Default: false
+    // 表示是否将属性数据存储在分离的模型中
     bool detach_property = false;
     virtual std::string to_string() const = 0;
     virtual void clear() = 0;

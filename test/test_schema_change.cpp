@@ -45,11 +45,13 @@ static std::string RandomString(size_t n) {
     return str;
 }
 
+// 创建一个简单的数据库，包含 person 标签和 knows 边
 static void CreateSampleDB(const std::string& dir, bool detach_property) {
     using namespace lgraph;
     lgraph::DBConfig conf;
     conf.dir = dir;
     lgraph::LightningGraph lg(conf);
+    // 添加一个名为 person 的标签
     VertexOptions vo;
     vo.primary_field = "id";
     vo.detach_property = detach_property;
@@ -62,6 +64,7 @@ static void CreateSampleDB(const std::string& dir, bool detach_property) {
         true, vo));
     lg.BlockingAddIndex("person", "name", lgraph::IndexType::NonuniqueIndex, true);
     lg.BlockingAddIndex("person", "age", lgraph::IndexType::NonuniqueIndex, true);
+    // 添加一个名为 knows 的边
     EdgeOptions options;
     options.temporal_field = "ts";
     options.temporal_field_order = lgraph::TemporalFieldOrder::ASC;
@@ -71,7 +74,9 @@ static void CreateSampleDB(const std::string& dir, bool detach_property) {
                                                        FieldSpec("ts", FieldType::INT64, true)}),
                                false, options));
     lg.BlockingAddIndex("knows", "weight", lgraph::IndexType::NonuniqueIndex, false);
+    // 创建写事务
     auto txn = lg.CreateWriteTxn();
+    // 添加 2 个带有 person 标签的顶点
     VertexId v0 =
         txn.AddVertex(std::string("person"),
                       std::vector<std::string>({"id", "name", "age", "img", "desc", "img2"}),
@@ -84,6 +89,7 @@ static void CreateSampleDB(const std::string& dir, bool detach_property) {
             {"2", "p2", "12", lgraph_api::base64::Encode(std::string(8192, 'a')),
              std::string(4096, 'b'), lgraph_api::base64::Encode(std::string(8192, 'c'))}));
 
+    // 添加一些边
     txn.AddEdge(v0, v1, std::string("knows"), std::vector<std::string>({"weight"}),
                 std::vector<std::string>({"1.25"}));
     txn.AddEdge(v0, v1, std::string("knows"), std::vector<std::string>({"weight"}),
@@ -92,6 +98,7 @@ static void CreateSampleDB(const std::string& dir, bool detach_property) {
                 std::vector<std::string>({"10.25"}));
     txn.AddEdge(v1, v0, std::string("knows"), std::vector<std::string>({"weight"}),
                 std::vector<std::string>({"10.5"}));
+    // 提交事务
     txn.Commit();
 }
 
@@ -142,6 +149,7 @@ TEST_P(TestSchemaChange, ModifyFields) {
     std::map<std::string, FieldSpec> fields = s1.GetFieldSpecsAsMap();
     {
         Schema s2(s1);
+        // 向 s2 中添加一个新的字段 id3
         s2.AddFields(std::vector<FieldSpec>({FieldSpec("id3", FieldType::INT32, false)}));
         UT_EXPECT_TRUE(s2.GetFieldExtractor("id3")->GetFieldSpec() ==
                        FieldSpec("id3", FieldType::INT32, false));
@@ -152,6 +160,7 @@ TEST_P(TestSchemaChange, ModifyFields) {
         UT_EXPECT_TRUE(s2.HasBlob());
         {
             Schema s3(s2);
+            // 如果添加的字段为 id，则会抛出异常，因为 id 已经存在
             UT_EXPECT_THROW_CODE(
                 s2.AddFields(std::vector<FieldSpec>({FieldSpec("id", FieldType::INT32, false)})),
                 FieldAlreadyExists);
@@ -162,12 +171,14 @@ TEST_P(TestSchemaChange, ModifyFields) {
             for (size_t i = 0; i < _detail::MAX_NUM_FIELDS - s3.GetNumFields(); i++) {
                 to_add.emplace_back(UT_FMT("a{}", i), FieldType::INT64, false);
             }
+            // 尝试添加最大字段数的字段
             s3.AddFields(to_add);
             UT_EXPECT_EQ(s3.GetNumFields(), _detail::MAX_NUM_FIELDS);
         }
         {
             Schema s3(s2);
             std::vector<FieldSpec> to_add;
+            // 由于添加的字段数超过了最大字段数的限制，因此会报错
             for (size_t i = 0; i < _detail::MAX_NUM_FIELDS - s3.GetNumFields() + 1; i++) {
                 to_add.emplace_back(UT_FMT("a{}", i), FieldType::INT64, false);
             }
@@ -206,19 +217,24 @@ TEST_P(TestSchemaChange, ModifyFields) {
     }
 }
 
+// 测试在简单图中删除字段
 TEST_P(TestSchemaChange, DelFields) {
     using namespace lgraph;
     std::string dir = "./testdb";
     AutoCleanDir cleaner(dir);
 
+    // 输出图（顶点 + 边）
     auto DumpGraph = [](LightningGraph& g, Transaction& txn) {
         std::string str;
+        // 遍历顶点
         for (auto it = txn.GetVertexIterator(); it.IsValid(); it.Next()) {
             str += FMA_FMT("{}: {}\n", it.GetId(), txn.GetVertexFields(it));
+            // 遍历每个顶点的 outedge，打印边的属性
             for (auto eit = it.GetOutEdgeIterator(); eit.IsValid(); eit.Next()) {
                 str += FMA_FMT("    -[{}]->[{}]: {}\n", eit.GetUid(), eit.GetDst(),
                                txn.GetEdgeFields(eit));
             }
+            // 遍历每个顶点的 inedge，打印边的属性
             for (auto eit = it.GetInEdgeIterator(); eit.IsValid(); eit.Next()) {
                 str += FMA_FMT("    <-[{}]-[{}]: {}\n", eit.GetUid(), eit.GetSrc(),
                                txn.GetEdgeFields(eit));
@@ -231,11 +247,14 @@ TEST_P(TestSchemaChange, DelFields) {
     conf.dir = dir;
     UT_LOG() << "Testing del field";
     CreateSampleDB(dir, GetParam());
+    // 获取顶点（person）的 schema
     auto orig_v_schema = GetCurrSchema(dir, true);
+    // 获取边（knows）的 schema
     auto orig_e_schema = GetCurrSchema(dir, false);
     {
         LightningGraph graph(conf);
         size_t n_changed = 0;
+        // 删除 age 和 img 字段
         UT_EXPECT_TRUE(graph.AlterLabelDelFields("person", std::vector<std::string>({"age", "img"}),
                                                  true, &n_changed));
         UT_EXPECT_EQ(n_changed, 2);

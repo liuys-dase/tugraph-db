@@ -58,6 +58,19 @@ class SchemaManager;
  **                     are recorded, since the first offset is obvious.
  **     V-data:         stores the data of the variable-length fields
 */
+/** Schema 是对一个记录中数据类型的描述。
+ ** 记录的布局如下：
+ **     [LabelId] [Null-array] [Fixed-fields] [V-offsets] [V-data]
+ ** 其中：
+ **     LabelId:        表示记录的标签，不同的标签有不同的模式。
+ **                     对于边来说省略 LabelId，因为边是按 LabelId 排序的，
+ **                     所以它成为了键的一部分。
+ **     Null-array:     记录字段是否为空。每个可为空的字段占用一位
+ **     Fixed-fields:   依次存储所有固定长度的字段
+ **     V-offsets:      存储可变长度字段的偏移量。
+ **                     注意，只记录从字段1到N-1的偏移量，因为第一个偏移量是显而易见的。
+ **     V-data:         存储可变长度字段的数据
+ */
 class Schema {
     friend class SchemaManager;
     friend class Transaction;
